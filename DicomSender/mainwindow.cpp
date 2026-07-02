@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 
+#include "resumestate.h"
 #include "setting.h"
 
 #include <dicombase.h>
@@ -14,7 +15,7 @@
 #define MAX_PATH 10
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), ui(new Ui::MainWindow), m_files(nullptr)
+    : QMainWindow(parent), ui(new Ui::MainWindow), m_files(nullptr), m_resumeState(nullptr)
 {
     ui->setupUi(this);
     setAcceptDrops(true);
@@ -345,13 +346,55 @@ void MainWindow::send()
         return;
     }
 
+    QString scanRoot = ui->comboBoxPaths->currentText();
+
+    // --- Resume state: load existing records and filter already-sent files ---
+    m_resumeState = new ResumeState(scanRoot);
+    m_resumeState->load();
+    m_resumeState->initialize(); // open state+log files for writing; may fail gracefully
+
+    int totalScanned = m_files->count();
+    int skippedCount = 0;
+
+    QStringList *filteredFiles = new QStringList;
+    for (const QString &file : *m_files)
+    {
+        if (m_resumeState->isAlreadySent(file))
+            ++skippedCount;
+        else
+            filteredFiles->append(file);
+    }
+
+    // Replace the scan result with the filtered list so the store thread only
+    // processes files that still need to be sent.
+    delete m_files;
+    m_files = filteredFiles;
+
+    addColorLog(true, QString(" Scanned: %1  |  Already sent (skipped): %2  |  Remaining: %3")
+                .arg(totalScanned).arg(skippedCount).arg(m_files->count()));
+
+    if (m_files->isEmpty())
+    {
+        addColorLog(true, " All files have already been sent successfully.");
+        logDone();
+        ui->buttonSend->setEnabled(true);
+        delete m_files;
+        m_files = nullptr;
+        delete m_resumeState;
+        m_resumeState = nullptr;
+        return;
+    }
+    // --- end resume state setup ---
+
     auto store = new StoreThread(ui->radioDcmtk->isChecked() ? Library::dcmtk : Library::gdcm, this);
     store->object()->setFiles(m_files);
     store->object()->setLocalAE(ui->editLocalAE->text().trimmed());
     store->object()->setTargetAE(ui->editTargetAE->text().trimmed());
     store->object()->setHost(ui->editHost->text().trimmed());
     store->object()->setPort(ui->spinBoxPort->value());
-    store->object()->setStopWhenError(ui->checkBoxStopWhenError->isChecked());
+    // Force stop-on-error so that a failure leaves the remaining files in place
+    // and the next run resumes from the exact failure point.
+    store->object()->setStopWhenError(true);
     store->object()->setConnectionTimeout(ui->comboBoxConnectionTimeout->currentData().toInt());
     if (ui->radioDcmtk->isChecked())
     {
@@ -382,6 +425,17 @@ void MainWindow::send()
         QString str = QString("[%1/%2] %3").arg(index.first, totalStr.length(), 10, QChar('0')).arg(index.second).arg(log);
 
         addColorLog(result, str);
+
+        // Record per-file outcome to the persistent state / session log.
+        if (m_resumeState != nullptr && m_files != nullptr &&
+            index.first >= 1 && index.first <= m_files->count())
+        {
+            const QString &filePath = m_files->at(index.first - 1);
+            if (result)
+                m_resumeState->recordSuccess(filePath, index.first, index.second, log);
+            else
+                m_resumeState->recordFailure(filePath, index.first, index.second, log);
+        }
     };
 
     auto fnFinished = [&]()
@@ -389,6 +443,8 @@ void MainWindow::send()
         ui->buttonSend->setEnabled(true);
         delete m_files;
         m_files = nullptr;
+        delete m_resumeState;
+        m_resumeState = nullptr;
         logDone();
     };
 

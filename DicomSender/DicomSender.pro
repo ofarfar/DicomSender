@@ -9,10 +9,12 @@ include($$PWD/../ThirdParty/qt.pri)
 SOURCES     += \
     main.cpp \
     mainwindow.cpp \
+    resumestate.cpp \
     setting.cpp
 
 HEADERS     += \
     mainwindow.h \
+    resumestate.h \
     setting.h \
     version.h
 
