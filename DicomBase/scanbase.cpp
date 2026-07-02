@@ -2,6 +2,7 @@
 
 #include <QDebug>
 #include <QDirIterator>
+#include <QFileInfo>
 #include <QCollator>
 
 ScanBase::ScanBase(QObject *parent)
@@ -99,6 +100,11 @@ void ScanBase::scanDir(const QString &dirPath)
 
         for (auto &childDir : dirs)
         {
+            // Skip the _DicomSender management directory so its state/log files
+            // are never included in the DICOM send list.
+            if (QFileInfo(childDir).fileName() == "_DicomSender")
+                continue;
+
             scanDir(childDir);
         }
     }

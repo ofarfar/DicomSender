@@ -1,0 +1,130 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      # ── 1. Checkout (with submodules for DCMTK / GDCM / zlib source) ──────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # ── 2. Install Qt 6 (MSVC 2019 x64) ────────────────────────────────────
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64'
+          cache: true
+
+      # ── 3. Set up MSVC developer environment ───────────────────────────────
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # ── 4. Build zlib ───────────────────────────────────────────────────────
+      - name: Build zlib
+        shell: cmd
+        working-directory: ThirdParty
+        run: |
+          set library=zlib
+          set bin=..\build\x64\%library%\bin
+          set build=..\build\x64\%library%
+
+          cmake -G "Visual Studio 17 2022" -A x64 ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DCMAKE_INSTALL_PREFIX=%bin% ^
+            -S %library% -B %build%
+
+          MSBuild %build%\ALL_BUILD.vcxproj -t:Build -p:Configuration=Release -m:%NUMBER_OF_PROCESSORS%
+
+          if not exist %build%\bin\lib mkdir %build%\bin\lib
+          if not exist %build%\bin\include mkdir %build%\bin\include
+          copy /y %build%\Release\zlibstatic.lib %build%\bin\lib\zlib_o.lib
+          copy /y %build%\zconf.h %build%\bin\include\zconf.h
+          copy /y zlib\zlib.h %build%\bin\include\zlib.h
+
+      # ── 5. Build DCMTK ──────────────────────────────────────────────────────
+      - name: Build DCMTK
+        shell: cmd
+        working-directory: ThirdParty
+        run: |
+          set library=dcmtk
+          set bin=..\build\x64\%library%\config
+          set build=..\build\x64\%library%
+          set zlib=..\build\x64\zlib\bin
+
+          cmake -G "Visual Studio 17 2022" -A x64 ^
+            -DDCMTK_USE_FIND_PACKAGE_WIN_DEFAULT=ON ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DBUILD_APPS=OFF ^
+            -DDCMTK_WIDE_CHAR_FILE_IO_FUNCTIONS=ON ^
+            -DDCMTK_USE_DCMDICTPATH=OFF ^
+            -DDCMTK_ENABLE_PRIVATE_TAGS=ON ^
+            -DDCMTK_COMPILE_WIN32_MULTITHREADED_DLL=ON ^
+            -DDCMTK_OVERWRITE_WIN32_COMPILER_FLAGS=OFF ^
+            -DDCMTK_WITH_ZLIB=ON ^
+            -DWITH_ZLIBINC=%zlib% ^
+            -DCMAKE_INSTALL_PREFIX=%bin% ^
+            -S %library% -B %build%
+
+          MSBuild %build%\ALL_BUILD.vcxproj -t:Build -p:Configuration=Release -m:%NUMBER_OF_PROCESSORS%
+
+      # ── 6. Build GDCM ───────────────────────────────────────────────────────
+      - name: Build GDCM
+        shell: cmd
+        working-directory: ThirdParty
+        run: |
+          set library=gdcm
+          set bin=..\build\x64\%library%\bin
+          set build=..\build\x64\%library%
+          set zlib=..\build\x64\zlib\bin
+
+          cmake -G "Visual Studio 17 2022" -A x64 ^
+            -DCMAKE_CXX_STANDARD=17 ^
+            -DGDCM_BUILD_TESTING=OFF ^
+            -DGDCM_USE_SYSTEM_ZLIB=ON ^
+            -DZLIB_INCLUDE_DIR=%zlib%\include ^
+            -DZLIB_LIBRARY_RELEASE=%zlib%\lib\zlib_o.lib ^
+            -DZLIB_LIBRARY_DEBUG=%zlib%\lib\zlib_o.lib ^
+            -DCMAKE_INSTALL_PREFIX=%bin% ^
+            -S %library% -B %build%
+
+          MSBuild %build%\ALL_BUILD.vcxproj -t:Build -p:Configuration=Release -m:%NUMBER_OF_PROCESSORS%
+
+      # ── 7. Build DicomBase + DicomSender via qmake ─────────────────────────
+      - name: Build DicomSender
+        shell: cmd
+        run: |
+          qmake DicomSender.pro "CONFIG+=release"
+          nmake
+
+      # ── 8. Collect the EXE and deploy Qt DLLs ──────────────────────────────
+      - name: Deploy Qt runtime
+        shell: cmd
+        run: |
+          set OUT=dist\DicomSender
+          mkdir %OUT%
+          copy /y bin\x64\Release\DicomSender.exe %OUT%\
+          copy /y bin\x64\Release\DicomBase.dll   %OUT%\
+          windeployqt --release --no-translations %OUT%\DicomSender.exe
+
+      # ── 9. Upload artifact ──────────────────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DicomSender-x64
+          path: dist\DicomSender\
+          if-no-files-found: error
