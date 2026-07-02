@@ -386,6 +386,8 @@ void MainWindow::send()
     }
     // --- end resume state setup ---
 
+    addLog(" Resume mode: stop-on-error is enforced so the next run can resume from the failure point.");
+
     auto store = new StoreThread(ui->radioDcmtk->isChecked() ? Library::dcmtk : Library::gdcm, this);
     store->object()->setFiles(m_files);
     store->object()->setLocalAE(ui->editLocalAE->text().trimmed());
